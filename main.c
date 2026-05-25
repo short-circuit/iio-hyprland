@@ -90,6 +90,7 @@ void system_fmt(char* format, ...) {
 }
 
 void handle_lock_rotation(int sig){
+    (void)sig;
     isRotationUnlocked ^= 1;
 }
 
@@ -167,6 +168,7 @@ void rotate_display_and_touch(int transform) {
 }
 
 void handle_orientation(enum Orientation orientation, const char* monitor_id) {
+    (void)monitor_id;
     if (orientation == Undefined || orientation == last_handled_orientation || !isRotationUnlocked)
         return;
     int transform = orientation_map[orientation];
@@ -222,15 +224,15 @@ enum Orientation parse_orientation_reply(DBusMessage* reply) {
     return property_to_enum(orientation);
 }
 
-void init_orientation(DBusConnection* conn, const char* monitor_id) {
+void init_orientation(DBusConnection* conn) {
     DBusMessage* reply = request_orientation(conn);
     if (reply != NULL) {
-        handle_orientation(parse_orientation_reply(reply), monitor_id);
+        handle_orientation(parse_orientation_reply(reply), NULL);
         dbus_message_unref(reply);
     }
 }
 
-void listen_orientation(DBusConnection* connection, const char* monitor_id) {
+void listen_orientation(DBusConnection* connection) {
     DBusMessage* msg;
     dbus_bus_add_match(connection,
         "type='signal',interface='org.freedesktop.DBus.Properties'", &error);
@@ -248,7 +250,7 @@ void listen_orientation(DBusConnection* connection, const char* monitor_id) {
                 if (parse_orientation_signal(msg) != Undefined) {
                     usleep(1000 * 300);
                     dbus_connection_flush(connection);
-                    init_orientation(connection, monitor_id);
+                    init_orientation(connection);
                 }
             } else {
                 dbus_message_unref(msg);
@@ -264,33 +266,6 @@ void parse_transform(char* transform_str) {
     orientation_map[1] = transform_str[2] - '0';
     orientation_map[2] = transform_str[4] - '0';
     orientation_map[3] = transform_str[6] - '0';
-}
-
-char* get_monitor_id(const char* monitor_name) {
-    char command[256];
-    snprintf(command, sizeof(command),
-        "hyprctl monitors -j all | jq -r '.[] | select(.name==\"%s\") | .id'",
-        monitor_name);
-    FILE* fp = popen(command, "r");
-    if (fp == NULL) {
-        perror("popen");
-        return NULL;
-    }
-
-    static char monitor_id[16];
-    for (int retry = 0; retry < 3; retry++) {
-        if (fgets(monitor_id, sizeof(monitor_id), fp) != NULL) {
-            pclose(fp);
-            monitor_id[strcspn(monitor_id, "\n")] = '\0';
-            return monitor_id;
-        }
-        usleep(100000);
-        clearerr(fp);
-    }
-
-    perror("fgets");
-    pclose(fp);
-    return NULL;
 }
 
 int main(int argc, char* argv[]) {
@@ -323,15 +298,8 @@ int main(int argc, char* argv[]) {
     // One-time setup: ensure hyprland.lua loads custom/touch.lua
     setup_touch_require();
 
-    char* monitor_id = get_monitor_id(output);
-    if (monitor_id == NULL) {
-        printf("error: cannot get monitor ID for %s\n", output);
-        dbus_disconnect(connection);
-        return 1;
-    }
-
-    init_orientation(connection, monitor_id);
-    listen_orientation(connection, monitor_id);
+    init_orientation(connection);
+    listen_orientation(connection);
 
     dbus_disconnect(connection);
     return 0;
