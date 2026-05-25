@@ -4,8 +4,9 @@
 #include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <dbus/dbus.h>
-    
+
 // corresponds to hyprctl orientation integers
 enum Orientation { Normal, LeftUp, BottomUp, RightUp, Undefined};
 
@@ -13,7 +14,7 @@ DBusError error;
 char* output = "eDP-1"; // Default output device
 int rotate_master_layout = 0; // Default layout
 int orientation_map[4] = {0,1,2,3};
-char flip_bottom_up = 0; //Default orientation is not flipped 
+char flip_bottom_up = 0; //Default orientation is not flipped
 char isRotationUnlocked = 1; //Default rotation is unlocked
 enum Orientation last_handled_orientation = Undefined;
 
@@ -54,7 +55,6 @@ enum Orientation property_to_enum(const char* orientation) {
     if (!strcmp(orientation, "right-up")) {
         return RightUp;
     }
-
     return Undefined;
 }
 
@@ -80,7 +80,7 @@ enum Orientation parse_orientation_signal(DBusMessage* msg) {
 }
 
 void system_fmt(char* format, ...) {
-    char command[420];
+    char command[1024];
     va_list args;
     va_start(args, format);
     vsnprintf(command, sizeof(command), format, args);
@@ -89,63 +89,109 @@ void system_fmt(char* format, ...) {
 }
 
 void handle_lock_rotation(int sig){
-	isRotationUnlocked ^= 1;
+    isRotationUnlocked ^= 1;
+}
+
+// Ensure hyprland.lua has require("custom.touch") — one-time setup
+void setup_touch_require() {
+    const char* home = getenv("HOME");
+    if (!home) return;
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.config/hypr/hyprland.lua", home);
+
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+
+    char* content = NULL;
+    size_t len = 0;
+    long pos;
+    while ((pos = ftell(f)) >= 0) {
+        char buf[4096];
+        size_t n = fread(buf, 1, sizeof(buf), f);
+        if (n == 0) break;
+        char* new = realloc(content, len + n + 1);
+        if (!new) break;
+        content = new;
+        memcpy(content + len, buf, n);
+        len += n;
+    }
+    if (content) content[len] = '\0';
+    fclose(f);
+
+    if (!content) return;
+
+    if (strstr(content, "custom.touch")) {
+        free(content);
+        return;
+    }
+
+    f = fopen(path, "a");
+    if (f) {
+        fprintf(f, "\n-- Touch rotation (managed by iio-hyprland)\nrequire(\"custom.touch\")\n");
+        fclose(f);
+    }
+    free(content);
+}
+
+// Write the current touch/tablet transform to custom/touch.lua
+void write_touch_lua(int transform) {
+    const char* home = getenv("HOME");
+    if (!home) return;
+
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s/.config/hypr/custom", home);
+    mkdir(dir, 0755);
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.config/hypr/custom/touch.lua", home);
+
+    FILE* f = fopen(path, "w");
+    if (!f) return;
+
+    fprintf(f, "-- Managed by iio-hyprland\n");
+    fprintf(f, "hl.config({input = {touchdevice = {transform = %d}, tablet = {transform = %d, output = \"%s\"}}})\n",
+            transform, transform, output);
+    fclose(f);
+}
+
+void rotate_display_and_touch(int transform) {
+    write_touch_lua(transform);
+
+    // Reload config to trigger input device callbacks
+    system("hyprctl reload config-only 2>/dev/null");
+
+    // Re-apply display rotation (lost during reload)
+    system_fmt("hyprctl eval \"hl.monitor({ output = \\\"%s\\\", mode = \\\"preferred\\\", position = \\\"auto\\\", scale = \\\"1\\\", transform = %d })\"", output, transform);
 }
 
 void handle_orientation(enum Orientation orientation, const char* monitor_id) {
     if (orientation == Undefined || orientation == last_handled_orientation || !isRotationUnlocked)
         return;
-    int orientation_transform = orientation_map[orientation];
-    // Ran if the --either --left-master or --right-master is pass in
-    // (pray that our lord and savior vaxry won't change hyprctl output)
-    if (rotate_master_layout == 1) {
-        if (orientation == Normal) { // --left-master flag
-            system_fmt("hyprctl --batch \"keyword monitor %s,transform,%d ; keyword input:touchdevice:transform %d ; keyword input:tablet:transform %d ; keyword workspace m[%s], layoutopt:orientation:left\"", output, orientation_transform, orientation_transform, orientation_transform, monitor_id);
-        }
-        else if (orientation == LeftUp) {
-            system_fmt("hyprctl --batch \"keyword monitor %s,transform,%d ; keyword input:touchdevice:transform %d ; keyword input:tablet:transform %d ; keyword workspace m[%s], layoutopt:orientation:top\"", output, orientation_transform, orientation_transform, orientation_transform, monitor_id);
-        }
-        else if (orientation == BottomUp) {
-            system_fmt("hyprctl --batch \"keyword monitor %s,transform,%d ; keyword input:touchdevice:transform %d ; keyword input:tablet:transform %d ; keyword workspace m[%s], layoutopt:orientation:left\"", output, orientation_transform, orientation_transform, orientation_transform, monitor_id);
-        }
-        else { // This covers RightUp orientation
-            system_fmt("hyprctl --batch \"keyword monitor %s,transform,%d ; keyword input:touchdevice:transform %d ; keyword input:tablet:transform %d ; keyword workspace m[%s], layoutopt:orientation:top\"", output, orientation_transform, orientation_transform, orientation_transform, monitor_id);
-        }
-    }
-    else if (rotate_master_layout == 2) { // --right-master flag
-        if (orientation == Normal) {
-            system_fmt("hyprctl --batch \"keyword monitor %s,transform,%d ; keyword input:touchdevice:transform %d ; keyword input:tablet:transform %d ; keyword workspace m[%s], layoutopt:orientation:right\"", output, orientation_transform, orientation_transform, orientation_transform, monitor_id);
-        }
-        else if (orientation == LeftUp) {
-            system_fmt("hyprctl --batch \"keyword monitor %s,transform,%d ; keyword input:touchdevice:transform %d ; keyword input:tablet:transform %d ; keyword workspace m[%s], layoutopt:orientation:bottom\"", output, orientation_transform, orientation_transform, orientation_transform, monitor_id);
-        }
-        else if (orientation == BottomUp) {
-            system_fmt("hyprctl --batch \"keyword monitor %s,transform,%d ; keyword input:touchdevice:transform %d ; keyword input:tablet:transform %d ; keyword workspace m[%s], layoutopt:orientation:right\"", output, orientation_transform, orientation_transform, orientation_transform, monitor_id);
-        }
-        else { // This covers RightUp orientation
-            system_fmt("hyprctl --batch \"keyword monitor %s,transform,%d ; keyword input:touchdevice:transform %d ; keyword input:tablet:transform %d ; keyword workspace m[%s], layoutopt:orientation:bottom\"", output, orientation_transform, orientation_transform, orientation_transform, monitor_id);
-        }
-    }
-    else {
-        // Rotates monitor and touch device without changing layout if the --rotate-flag-layout flag is not passed
-        system_fmt("hyprctl --batch \"keyword monitor %s,transform,%d ; keyword input:touchdevice:transform %d ; keyword input:tablet:transform %d\"", output, orientation_transform, orientation_transform, orientation_transform);
+    int transform = orientation_map[orientation];
 
+    rotate_display_and_touch(transform);
+
+    // Handle master workspace layout if requested
+    if (rotate_master_layout == 1) {
+        const char* dir = (orientation == Normal || orientation == BottomUp) ? "left" : "top";
+        system_fmt("hyprctl eval \"hl.config({ master = { orientation = \\\"%s\\\" } })\"", dir);
+    } else if (rotate_master_layout == 2) {
+        const char* dir = (orientation == Normal || orientation == BottomUp) ? "right" : "bottom";
+        system_fmt("hyprctl eval \"hl.config({ master = { orientation = \\\"%s\\\" } })\"", dir);
     }
 
     last_handled_orientation = orientation;
 }
 
 DBusMessage* request_orientation(DBusConnection* conn) {
-
-    // create request calling Get method
     DBusMessage* req = dbus_message_new_method_call(
-        "net.hadess.SensorProxy", // destination
-        "/net/hadess/SensorProxy", // path
-        "org.freedesktop.DBus.Properties", // iface
-        "Get" // method
+        "net.hadess.SensorProxy",
+        "/net/hadess/SensorProxy",
+        "org.freedesktop.DBus.Properties",
+        "Get"
     );
 
-    // append arguments of Get method to request
     const char* interface_name = "net.hadess.SensorProxy";
     const char* property_name = "AccelerometerOrientation";
     dbus_message_append_args(req,
@@ -154,21 +200,14 @@ DBusMessage* request_orientation(DBusConnection* conn) {
         DBUS_TYPE_INVALID
     );
 
-    // send request and get reply
     DBusMessage* reply = dbus_connection_send_with_reply_and_block(
-        conn,
-        req,
-        DBUS_TIMEOUT_INFINITE,
-        &error
-    );
+        conn, req, DBUS_TIMEOUT_INFINITE, &error);
 
-    // check reply
     if (dbus_error_is_set(&error)) {
         printf("Error receiving orientation request: %s: %s\n",
                error.name, error.message);
     }
 
-    // clean up and return
     dbus_message_unref(req);
     return reply;
 }
@@ -177,13 +216,12 @@ enum Orientation parse_orientation_reply(DBusMessage* reply) {
     DBusMessageIter iter, sub_iter;
     const char* orientation;
     dbus_message_iter_init(reply, &iter);
-    dbus_message_iter_recurse(&iter, &sub_iter); // DBUS_TYPE_VARIANT
-    dbus_message_iter_get_basic(&sub_iter, &orientation); // DBUS_TYPE_STRING
+    dbus_message_iter_recurse(&iter, &sub_iter);
+    dbus_message_iter_get_basic(&sub_iter, &orientation);
     return property_to_enum(orientation);
 }
 
 void init_orientation(DBusConnection* conn, const char* monitor_id) {
-// this function proactively requests current orientation, even if not changed
     DBusMessage* reply = request_orientation(conn);
     if (reply != NULL) {
         handle_orientation(parse_orientation_reply(reply), monitor_id);
@@ -192,7 +230,6 @@ void init_orientation(DBusConnection* conn, const char* monitor_id) {
 }
 
 void listen_orientation(DBusConnection* connection, const char* monitor_id) {
-// this function passively listens for changes to orientation
     DBusMessage* msg;
     dbus_bus_add_match(connection,
         "type='signal',interface='org.freedesktop.DBus.Properties'", &error);
@@ -208,8 +245,7 @@ void listen_orientation(DBusConnection* connection, const char* monitor_id) {
             if (dbus_message_is_signal(msg, "org.freedesktop.DBus.Properties",
                     "PropertiesChanged")) {
                 if (parse_orientation_signal(msg) != Undefined) {
-                    // Handle batches of messages from sensitive sensors
-                    usleep(1000 * 300); // 300ms
+                    usleep(1000 * 300);
                     dbus_connection_flush(connection);
                     init_orientation(connection, monitor_id);
                 }
@@ -223,18 +259,17 @@ void listen_orientation(DBusConnection* connection, const char* monitor_id) {
 }
 
 void parse_transform(char* transform_str) {
-	orientation_map[0] = transform_str[0] - '0';
-	orientation_map[1] = transform_str[2] - '0';
-	orientation_map[2] = transform_str[4] - '0';
-	orientation_map[3] = transform_str[6] - '0';
+    orientation_map[0] = transform_str[0] - '0';
+    orientation_map[1] = transform_str[2] - '0';
+    orientation_map[2] = transform_str[4] - '0';
+    orientation_map[3] = transform_str[6] - '0';
 }
 
-char* get_monitor_id(const char* monitor_name) { 
-    // Monitor prop for workspace layoutopt rule isn't accepting monitor name, for some reason
-    // This is a workaround to get monitor ID instead
-
+char* get_monitor_id(const char* monitor_name) {
     char command[256];
-    snprintf(command, sizeof(command), "hyprctl monitors -j all | jq -r '.[] | select(.name==\"%s\") | .id'", monitor_name, monitor_name);
+    snprintf(command, sizeof(command),
+        "hyprctl monitors -j all | jq -r '.[] | select(.name==\"%s\") | .id'",
+        monitor_name);
     FILE* fp = popen(command, "r");
     if (fp == NULL) {
         perror("popen");
@@ -249,7 +284,6 @@ char* get_monitor_id(const char* monitor_name) {
     }
 
     pclose(fp);
-    // Remove newline character if present
     monitor_id[strcspn(monitor_id, "\n")] = '\0';
     return monitor_id;
 }
@@ -261,27 +295,29 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Parse command-line arguments
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--left-master") == 0) {
-            rotate_master_layout = 1; // Enable rotate-layout if flag is found
+            rotate_master_layout = 1;
         }
         else if (strcmp(argv[i], "--right-master") == 0) {
-            rotate_master_layout = 2; // Enable rotate-layout if flag is found
+            rotate_master_layout = 2;
         }
-	else if (strcmp(argv[i], "--flip-bottom-up") ==0){
-	    flip_bottom_up = 1; //Swap bottomUp / Normal orientation
-	}
-	else if(strcmp(argv[i], "--transform") == 0) {
-          parse_transform(argv[++i]);
-	}	       	
+        else if (strcmp(argv[i], "--flip-bottom-up") == 0) {
+            flip_bottom_up = 1;
+        }
+        else if (strcmp(argv[i], "--transform") == 0) {
+            parse_transform(argv[++i]);
+        }
         else {
             output = argv[i];
         }
     }
-    //signal for locking rotation
-    signal(SIGUSR1,handle_lock_rotation);
-    // Get monitor ID for the specified output
+
+    signal(SIGUSR1, handle_lock_rotation);
+
+    // One-time setup: ensure hyprland.lua loads custom/touch.lua
+    setup_touch_require();
+
     char* monitor_id = get_monitor_id(output);
     if (monitor_id == NULL) {
         printf("error: cannot get monitor ID for %s\n", output);
@@ -289,11 +325,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // if hyprland and iio-hyprland are restarted after display is already rotated,
-    // init_orientation ensures correct immediate orientation without
-    // waiting for display to move
     init_orientation(connection, monitor_id);
-
     listen_orientation(connection, monitor_id);
 
     dbus_disconnect(connection);
