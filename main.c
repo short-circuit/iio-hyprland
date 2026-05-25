@@ -19,9 +19,10 @@ char isRotationUnlocked = 1; //Default rotation is unlocked
 enum Orientation last_handled_orientation = Undefined;
 
 void dbus_disconnect(DBusConnection* connection) {
-    dbus_connection_flush(connection);
-    dbus_connection_close(connection);
-    dbus_connection_unref(connection);
+    if (connection) {
+        dbus_connection_flush(connection);
+        dbus_connection_unref(connection);
+    }
     dbus_error_free(&error);
 }
 
@@ -277,15 +278,19 @@ char* get_monitor_id(const char* monitor_name) {
     }
 
     static char monitor_id[16];
-    if (fgets(monitor_id, sizeof(monitor_id), fp) == NULL) {
-        perror("fgets");
-        pclose(fp);
-        return NULL;
+    for (int retry = 0; retry < 3; retry++) {
+        if (fgets(monitor_id, sizeof(monitor_id), fp) != NULL) {
+            pclose(fp);
+            monitor_id[strcspn(monitor_id, "\n")] = '\0';
+            return monitor_id;
+        }
+        usleep(100000);
+        clearerr(fp);
     }
 
+    perror("fgets");
     pclose(fp);
-    monitor_id[strcspn(monitor_id, "\n")] = '\0';
-    return monitor_id;
+    return NULL;
 }
 
 int main(int argc, char* argv[]) {
