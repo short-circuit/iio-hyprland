@@ -94,8 +94,13 @@ void handle_lock_rotation(int sig){
     isRotationUnlocked ^= 1;
 }
 
-// Ensure hyprland.lua has require("custom.touch") — one-time setup
+void write_touch_lua(int transform);
+
+// Ensure custom/touch.lua exists and hyprland.lua loads it
 void setup_touch_require() {
+    // Create custom/touch.lua FIRST so it exists before any config reload
+    write_touch_lua(0);
+
     const char* home = getenv("HOME");
     if (!home) return;
 
@@ -107,8 +112,7 @@ void setup_touch_require() {
 
     char* content = NULL;
     size_t len = 0;
-    long pos;
-    while ((pos = ftell(f)) >= 0) {
+    while (1) {
         char buf[4096];
         size_t n = fread(buf, 1, sizeof(buf), f);
         if (n == 0) break;
@@ -121,17 +125,12 @@ void setup_touch_require() {
     if (content) content[len] = '\0';
     fclose(f);
 
-    if (!content) return;
-
-    if (strstr(content, "custom.touch")) {
-        free(content);
-        return;
-    }
-
-    f = fopen(path, "a");
-    if (f) {
-        fprintf(f, "\n-- Touch rotation (managed by iio-hyprland)\nrequire(\"custom.touch\")\n");
-        fclose(f);
+    if (content && !strstr(content, "custom.touch")) {
+        f = fopen(path, "a");
+        if (f) {
+            fprintf(f, "\n-- Touch rotation (managed by iio-hyprland)\nrequire(\"custom.touch\")\n");
+            fclose(f);
+        }
     }
     free(content);
 }

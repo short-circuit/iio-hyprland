@@ -6,7 +6,7 @@
   ninja,
   dbus,
   pkg-config,
-  jq,
+  hyprland,
   makeWrapper
 }:
 stdenv.mkDerivation rec {
@@ -24,12 +24,12 @@ stdenv.mkDerivation rec {
 
   buildInputs = [
     dbus
-    jq
+    hyprland
   ];
 
   postInstall = ''
     wrapProgram "$out/bin/iio-hyprland" \
-      --prefix PATH : "${jq}/bin"
+      --prefix PATH : "${hyprland}/bin"
   '';
 
   meta = with lib; {
