@@ -7,6 +7,7 @@
   dbus,
   pkg-config,
   hyprland,
+  libnotify,
   makeWrapper
 }:
 stdenv.mkDerivation rec {
@@ -25,11 +26,13 @@ stdenv.mkDerivation rec {
   buildInputs = [
     dbus
     hyprland
+    libnotify
   ];
 
   postInstall = ''
     wrapProgram "$out/bin/iio-hyprland" \
-      --prefix PATH : "${hyprland}/bin"
+      --prefix PATH : "${hyprland}/bin" \
+      --prefix PATH : "${libnotify}/bin"
   '';
 
   meta = with lib; {

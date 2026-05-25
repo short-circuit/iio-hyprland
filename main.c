@@ -172,19 +172,21 @@ void write_toggle_state() {
 
 void send_toggle_notification() {
     if (isRotationUnlocked)
-        system("hyprctl notify -1 2000 \"rgb(ff1ea3)\" \"Auto-rotation enabled\" 2>/dev/null");
+        system("notify-send -a iio-hyprland \"Auto-rotation enabled\" 2>/dev/null");
     else
-        system("hyprctl notify -1 2000 \"rgb(ff1ea3)\" \"Auto-rotation disabled\" 2>/dev/null");
+        system("notify-send -a iio-hyprland \"Auto-rotation disabled\" 2>/dev/null");
 }
 
 void rotate_display_and_touch(int transform) {
     write_touch_lua(transform);
 
-    // Reload config to trigger input device callbacks
-    system("hyprctl reload config-only 2>/dev/null");
-
-    // Re-apply display rotation (lost during reload)
-    system_fmt("hyprctl eval \"hl.monitor({ output = \\\"%s\\\", mode = \\\"preferred\\\", position = \\\"auto\\\", scale = \\\"1\\\", transform = %d })\"", output, transform);
+    int uid = getuid();
+    system_fmt(
+        "sig=$(ls -1t /run/user/%d/hypr 2>/dev/null | head -1) && "
+        "export HYPRLAND_INSTANCE_SIGNATURE=$sig XDG_RUNTIME_DIR=/run/user/%d && "
+        "hyprctl reload config-only 2>/dev/null && "
+        "hyprctl eval \"hl.monitor({ output = \\\"%s\\\", mode = \\\"preferred\\\", position = \\\"auto\\\", scale = \\\"1\\\", transform = %d })\"",
+        uid, uid, output, transform);
 }
 
 void handle_orientation(enum Orientation orientation, const char* monitor_id) {
@@ -325,6 +327,14 @@ int main(int argc, char* argv[]) {
 
     // Initialise toggle state file
     write_toggle_state();
+
+    // Clean up stale Hyprland instances
+    int uid = getuid();
+    system_fmt(
+        "cd /run/user/%d/hypr 2>/dev/null && "
+        "latest=$(ls -1t | head -1) && "
+        "for d in */; do test \"${d%/}\" != \"$latest\" && rm -rf \"$d\"; done 2>/dev/null",
+        uid);
 
     // One-time setup: ensure hyprland.lua loads custom/touch.lua
     setup_touch_require();
