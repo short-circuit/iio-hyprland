@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 #include <dbus/dbus.h>
 
+static volatile int rotation_toggle_requested = 0;
+
 // corresponds to hyprctl orientation integers
 enum Orientation { Normal, LeftUp, BottomUp, RightUp, Undefined};
 
@@ -91,7 +93,7 @@ void system_fmt(char* format, ...) {
 
 void handle_lock_rotation(int sig){
     (void)sig;
-    isRotationUnlocked ^= 1;
+    rotation_toggle_requested = 1;
 }
 
 void write_touch_lua(int transform);
@@ -154,6 +156,25 @@ void write_touch_lua(int transform) {
     fprintf(f, "hl.config({input = {touchdevice = {transform = %d}, tablet = {transform = %d, output = \"%s\"}}})\n",
             transform, transform, output);
     fclose(f);
+}
+
+void write_toggle_state() {
+    const char* home = getenv("HOME");
+    if (!home) return;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.config/hypr/rotation-toggle", home);
+    FILE* f = fopen(path, "w");
+    if (f) {
+        fprintf(f, "%d\n", isRotationUnlocked);
+        fclose(f);
+    }
+}
+
+void send_toggle_notification() {
+    if (isRotationUnlocked)
+        system("hyprctl notify -1 2000 \"rgb(ff1ea3)\" \"Auto-rotation enabled\" 2>/dev/null");
+    else
+        system("hyprctl notify -1 2000 \"rgb(ff1ea3)\" \"Auto-rotation disabled\" 2>/dev/null");
 }
 
 void rotate_display_and_touch(int transform) {
@@ -241,7 +262,15 @@ void listen_orientation(DBusConnection* connection) {
         "SensorProxy'",
         &error);
     dbus_connection_flush(connection);
-    while (dbus_connection_read_write_dispatch(connection, -1)) {
+    while (dbus_connection_read_write_dispatch(connection, 500)) {
+        // Handle rotation toggle request from SIGUSR1
+        if (rotation_toggle_requested) {
+            rotation_toggle_requested = 0;
+            isRotationUnlocked = !isRotationUnlocked;
+            write_toggle_state();
+            send_toggle_notification();
+        }
+
         msg = dbus_connection_pop_message(connection);
         if (msg != NULL) {
             if (dbus_message_is_signal(msg, "org.freedesktop.DBus.Properties",
@@ -293,6 +322,9 @@ int main(int argc, char* argv[]) {
     }
 
     signal(SIGUSR1, handle_lock_rotation);
+
+    // Initialise toggle state file
+    write_toggle_state();
 
     // One-time setup: ensure hyprland.lua loads custom/touch.lua
     setup_touch_require();
