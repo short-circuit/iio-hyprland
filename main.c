@@ -284,7 +284,7 @@ void listen_orientation(DBusConnection* connection) {
                 }
             } else {
                 dbus_message_unref(msg);
-                break;
+                continue;
             }
             dbus_message_unref(msg);
         }
